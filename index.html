@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Speedrun Timer (Web)</title>
+    <style>
+      :root {
+        --gap: 10px;
+        --radius: 10px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+          "Liberation Mono", monospace;
+        margin: 0;
+        padding: 16px;
+        display: grid;
+        gap: var(--gap);
+        background: #0f1115;
+        color: #e7e9ee;
+      }
+      .panel {
+        background: #171a21;
+        border: 1px solid #2a2f3a;
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .time {
+        font-size: clamp(32px, 7vw, 64px);
+        text-align: center;
+        letter-spacing: 1px;
+      }
+      .buttons {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: var(--gap);
+      }
+      button {
+        padding: 12px;
+        font-size: 16px;
+        border-radius: 8px;
+        border: 1px solid #3a4152;
+        background: #222737;
+        color: #e7e9ee;
+        cursor: pointer;
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 8px;
+        border-bottom: 1px solid #2a2f3a;
+        text-align: right;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: center;
+        width: 48px;
+      }
+      .status {
+        opacity: 0.8;
+        font-size: 14px;
+      }
+      .kbd {
+        font-size: 12px;
+        opacity: 0.8;
+        background: #111420;
+        padding: 2px 6px;
+        border-radius: 6px;
+        border: 1px solid #2a2f3a;
+      }
+      .footer {
+        font-size: 12px;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="time" id="time">00:00.000</div>
+      <div class="buttons">
+        <button id="start">Start / Pause <span class="kbd">Space</span></button>
+        <button id="split">Split <span class="kbd">Enter</span></button>
+        <button id="undo">Undo <span class="kbd">Backspace</span></button>
+        <button id="reset">Reset <span class="kbd">R</span></button>
+        <button id="exportBtn">Export <span class="kbd">E</span></button>
+        <button id="importBtn">Import <span class="kbd">I</span></button>
+      </div>
+      <div class="status" id="status">Ready</div>
+    </div>
+
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Segment</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="footer panel">
+      Hotkeys: Space = Start/Pause, Enter = Split, Backspace = Undo, R = Reset,
+      E = Export, I = Import. データは自動でLocalStorageに保存されます。
+    </div>
+
+    <script>
+      (function () {
+        const $ = (sel) => document.querySelector(sel);
+        const timeEl = $("#time");
+        const statusEl = $("#status");
+        const tbody = $("#tbody");
+
+        const state = {
+          running: false,
+          startTs: 0, // performance.now() 基準
+          elapsed: 0, // 累計（ms）
+          lastSplitElapsed: 0, // 直近スプリット時点の累計（ms）
+          raf: 0,
+          splits: [], // {segMs, totalMs}
+        };
+
+        // ---- Utils ----
+        function pad(n, w) {
+          return n.toString().padStart(w, "0");
+        }
+        function fmt(ms) {
+          ms = Math.max(0, Math.round(ms));
+          const totalSec = Math.floor(ms / 1000);
+          const m = Math.floor(totalSec / 60);
+          const s = totalSec % 60;
+          const msec = ms % 1000;
+          return `${pad(m, 2)}:${pad(s, 2)}.${pad(msec, 3)}`;
+        }
+
+        // ---- Render ----
+        function renderClock() {
+          if (state.running) {
+            const now = performance.now();
+            state.elapsed = now - state.startTs;
+            timeEl.textContent = fmt(state.elapsed);
+            state.raf = requestAnimationFrame(renderClock);
+          } else {
+            timeEl.textContent = fmt(state.elapsed);
+          }
+        }
+
+        function renderTable() {
+          tbody.innerHTML = "";
+          state.splits.forEach((rec, i) => {
+            const tr = document.createElement("tr");
+            const tdIdx = document.createElement("td");
+            const tdSeg = document.createElement("td");
+            const tdTot = document.createElement("td");
+            tdIdx.textContent = i + 1;
+            tdSeg.textContent = fmt(rec.segMs);
+            tdTot.textContent = fmt(rec.totalMs);
+            tr.append(tdIdx, tdSeg, tdTot);
+            tbody.appendChild(tr);
+          });
+        }
+
+        function setStatus(s) {
+          statusEl.textContent = s;
+        }
+
+        // ---- Controls ----
+        function toggle() {
+          if (!state.running) {
+            state.startTs = performance.now() - state.elapsed;
+            state.running = true;
+            setStatus("Running");
+            cancelAnimationFrame(state.raf);
+            state.raf = requestAnimationFrame(renderClock);
+          } else {
+            // pause
+            state.elapsed = performance.now() - state.startTs;
+            state.running = false;
+            setStatus("Paused");
+            cancelAnimationFrame(state.raf);
+            renderClock();
+            persist();
+          }
+        }
+
+        function resetAll() {
+          state.running = false;
+          cancelAnimationFrame(state.raf);
+          state.elapsed = 0;
+          state.lastSplitElapsed = 0;
+          state.splits = [];
+          setStatus("Reset");
+          renderClock();
+          renderTable();
+          persist();
+        }
+
+        function split() {
+          if (!state.running) return;
+          const nowElapsed = performance.now() - state.startTs;
+          const segMs = Math.max(0, nowElapsed - state.lastSplitElapsed);
+          state.lastSplitElapsed = nowElapsed;
+          state.splits.push({ segMs, totalMs: nowElapsed });
+          renderTable();
+          persist();
+        }
+
+        function undo() {
+          if (state.splits.length === 0) return;
+          state.splits.pop();
+          const last = state.splits[state.splits.length - 1];
+          state.lastSplitElapsed = last ? last.totalMs : 0;
+          renderTable();
+          persist();
+        }
+
+        // ---- Persistence (LocalStorage) ----
+        const LS_KEY = "speedrun_timer_splits_v1";
+        function persist() {
+          const payload = {
+            elapsed: state.elapsed,
+            running: false, // 常にfalseで保存（ロード時は手動再開）
+            lastSplitElapsed: state.lastSplitElapsed,
+            splits: state.splits,
+          };
+          localStorage.setItem(LS_KEY, JSON.stringify(payload));
+        }
+
+        function restore() {
+          try {
+            const raw = localStorage.getItem(LS_KEY);
+            if (!raw) return;
+            const obj = JSON.parse(raw);
+            state.elapsed = obj.elapsed || 0;
+            state.lastSplitElapsed = obj.lastSplitElapsed || 0;
+            state.splits = Array.isArray(obj.splits) ? obj.splits : [];
+            state.running = false;
+            renderClock();
+            renderTable();
+            setStatus("Restored from LocalStorage");
+          } catch (e) {
+            console.error(e);
+          }
+        }
+
+        // ---- Export / Import ----
+        function exportJSON() {
+          const data = {
+            splits: state.splits.map((r, i) => ({
+              index: i + 1,
+              segment_ms: Math.round(r.segMs),
+              total_ms: Math.round(r.totalMs),
+            })),
+          };
+          const blob = new Blob([JSON.stringify(data, null, 2)], {
+            type: "application/json",
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "splits.json";
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+
+        function importJSON() {
+          const inp = document.createElement("input");
+          inp.type = "file";
+          inp.accept = "application/json";
+          inp.onchange = () => {
+            const file = inp.files[0];
+            if (!file) return;
+            const fr = new FileReader();
+            fr.onload = () => {
+              try {
+                const obj = JSON.parse(fr.result);
+                state.splits = (obj.splits || []).map((x) => ({
+                  segMs: +x.segment_ms,
+                  totalMs: +x.total_ms,
+                }));
+                state.lastSplitElapsed = state.splits.length
+                  ? state.splits[state.splits.length - 1].totalMs
+                  : 0;
+                renderTable();
+                persist();
+                setStatus("Imported splits.json");
+              } catch (e) {
+                alert("Invalid JSON");
+              }
+            };
+            fr.readAsText(file);
+          };
+          inp.click();
+        }
+
+        // ---- Wire UI ----
+        $("#start").addEventListener("click", toggle);
+        $("#split").addEventListener("click", split);
+        $("#undo").addEventListener("click", undo);
+        $("#reset").addEventListener("click", resetAll);
+        $("#exportBtn").addEventListener("click", exportJSON);
+        $("#importBtn").addEventListener("click", importJSON);
+
+        // ---- Hotkeys ----
+        window.addEventListener("keydown", (e) => {
+          const tag = (e.target && (e.target.tagName || "")).toLowerCase();
+          const typing = tag === "input" || tag === "textarea" || e.isComposing;
+          if (typing) return;
+
+          if (e.code === "Space") {
+            e.preventDefault();
+            toggle();
+          } else if (e.code === "Enter") {
+            e.preventDefault();
+            split();
+          } else if (e.code === "Backspace") {
+            e.preventDefault();
+            undo();
+          } else if (e.key === "r" || e.key === "R") {
+            e.preventDefault();
+            resetAll();
+          } else if (e.key === "e" || e.key === "E") {
+            e.preventDefault();
+            exportJSON();
+          } else if (e.key === "i" || e.key === "I") {
+            e.preventDefault();
+            importJSON();
+          }
+        });
+
+        // ---- Init ----
+        restore();
+        renderClock();
+      })();
+    </script>
+  </body>
+</html>
